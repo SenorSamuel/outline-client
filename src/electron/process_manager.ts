@@ -145,6 +145,12 @@ export class ConnectionManager {
     }
   }
 
+  private async isSsLocalReachable() {
+    await isServerReachable(
+        PROXY_ADDRESS, PROXY_PORT, SSLOCAL_CONNECTION_TIMEOUT, SSLOCAL_MAX_ATTEMPTS,
+        SSLOCAL_RETRY_INTERVAL_MS);
+  }
+
   // Fulfills once all three helpers have started successfully.
   async start() {
     if (isWindows) {
@@ -153,9 +159,7 @@ export class ConnectionManager {
 
     // ss-local must be up in order to test UDP support and validate credentials.
     this.ssLocal.start(this.config);
-    await isServerReachable(
-        PROXY_ADDRESS, PROXY_PORT, SSLOCAL_CONNECTION_TIMEOUT, SSLOCAL_MAX_ATTEMPTS,
-        SSLOCAL_RETRY_INTERVAL_MS);
+    await this.isSsLocalReachable();
 
     // Don't validate credentials on boot: if the key was revoked, we want the system to stay
     // "connected" so that traffic doesn't leak.
@@ -172,32 +176,36 @@ export class ConnectionManager {
 
   private async networkChanged(status: ConnectionStatus) {
     if (status === ConnectionStatus.CONNECTED) {
-      // Re-test whether UDP is available and, if necessary, (silently) restart tun2socks.
-      const isUdpEnabledNow = await checkUdpForwardingEnabled(PROXY_ADDRESS, PROXY_PORT);
-      if (isUdpEnabledNow === this.isUdpEnabled) {
-        console.log('no change in UDP availability');
-        if (this.reconnectedListener) {
-          this.reconnectedListener();
-        }
-        return;
+      // Re-test whether UDP is available and, if necessary, restart tun2socks.
+      let isUdpEnabledNow = this.isUdpEnabled;
+      try {
+        // Because we've (occasionally) seen failures connecting to ss-local
+        // immediately after network changes, make sure it's reachable first.
+        await this.isSsLocalReachable();
+        isUdpEnabledNow = await checkUdpForwardingEnabled(PROXY_ADDRESS, PROXY_PORT);
+      } catch (e) {
+        console.error(`UDP test failed: ${e.message}`);
       }
 
-      console.log(`UDP support change: ${this.isUdpEnabled} -> ${isUdpEnabledNow}`);
-      this.isUdpEnabled = isUdpEnabledNow;
+      if (isUdpEnabledNow !== this.isUdpEnabled) {
+        console.log(`UDP support change: ${this.isUdpEnabled} -> ${isUdpEnabledNow}`);
+        this.isUdpEnabled = isUdpEnabledNow;
 
-      // Swap out the current listener, restart once the current process exits.
-      this.tun2socks.onExit = () => {
-        console.log('terminated tun2socks for UDP change');
+        // Swap out the current listener, restart once the current process exits.
+        await new Promise((fulfill) => {
+          this.tun2socks.onExit = () => {
+            console.log('restarting tun2socks');
+            this.tun2socks.onExit = this.tun2socksExitListener;
+            this.tun2socks.start(this.isUdpEnabled);
+            fulfill();
+          };
+          this.tun2socks.stop();
+        });
+      }
 
-        this.tun2socks.onExit = this.tun2socksExitListener;
-        this.tun2socks.start(this.isUdpEnabled);
-
-        if (this.reconnectedListener) {
-          this.reconnectedListener();
-        }
-      };
-
-      this.tun2socks.stop();
+      if (this.reconnectedListener) {
+        this.reconnectedListener();
+      }
     } else if (status === ConnectionStatus.RECONNECTING) {
       if (this.reconnectingListener) {
         this.reconnectingListener();
@@ -215,6 +223,8 @@ export class ConnectionManager {
 
     powerMonitor.once('resume', async () => {
       console.log('restarting tun2socks');
+      // Possible over-caution: ensure ss-local is reachable.
+      await this.isSsLocalReachable();
       this.isUdpEnabled = await checkUdpForwardingEnabled(PROXY_ADDRESS, PROXY_PORT);
       console.log(`UDP support: ${this.isUdpEnabled}`);
 
@@ -288,8 +298,8 @@ class ChildProcessHelper {
       }
     };
 
-    // We have to listen for both events: error means the process could not be launched and in that
-    // case exit will not be invoked.
+    // We have to listen for both events: error means the process could not be launched and in
+    // that case exit will not be invoked.
     this.process.on('error', onExit.bind((this)));
     this.process.on('exit', onExit.bind((this)));
   }
