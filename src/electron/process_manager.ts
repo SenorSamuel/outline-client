@@ -101,7 +101,7 @@ export class ConnectionManager {
   // us swap the listener in and out.
   private tun2socksExitListener?: () => void | undefined;
 
-  private udpEnabled = false;
+  private isUdpEnabled = false;
 
   private readonly onAllHelpersStopped: Promise<void>;
 
@@ -163,9 +163,9 @@ export class ConnectionManager {
       await validateServerCredentials(PROXY_ADDRESS, PROXY_PORT);
     }
 
-    this.udpEnabled = await checkUdpForwardingEnabled(PROXY_ADDRESS, PROXY_PORT);
-    console.log(`UDP support: ${this.udpEnabled}`);
-    this.tun2socks.start(this.udpEnabled);
+    this.isUdpEnabled = await checkUdpForwardingEnabled(PROXY_ADDRESS, PROXY_PORT);
+    console.log(`UDP support: ${this.isUdpEnabled}`);
+    this.tun2socks.start(this.isUdpEnabled);
 
     await this.routing.start();
   }
@@ -173,8 +173,8 @@ export class ConnectionManager {
   private async networkChanged(status: ConnectionStatus) {
     if (status === ConnectionStatus.CONNECTED) {
       // Re-test whether UDP is available and, if necessary, (silently) restart tun2socks.
-      const udpNowEnabled = await checkUdpForwardingEnabled(PROXY_ADDRESS, PROXY_PORT);
-      if (udpNowEnabled === this.udpEnabled) {
+      const isUdpEnabledNow = await checkUdpForwardingEnabled(PROXY_ADDRESS, PROXY_PORT);
+      if (isUdpEnabledNow === this.isUdpEnabled) {
         console.log('no change in UDP availability');
         if (this.reconnectedListener) {
           this.reconnectedListener();
@@ -182,15 +182,15 @@ export class ConnectionManager {
         return;
       }
 
-      console.log(`UDP support change: ${this.udpEnabled} -> ${udpNowEnabled}`);
-      this.udpEnabled = udpNowEnabled;
+      console.log(`UDP support change: ${this.isUdpEnabled} -> ${isUdpEnabledNow}`);
+      this.isUdpEnabled = isUdpEnabledNow;
 
       // Swap out the current listener, restart once the current process exits.
       this.tun2socks.onExit = () => {
         console.log('terminated tun2socks for UDP change');
 
         this.tun2socks.onExit = this.tun2socksExitListener;
-        this.tun2socks.start(this.udpEnabled);
+        this.tun2socks.start(this.isUdpEnabled);
 
         if (this.reconnectedListener) {
           this.reconnectedListener();
@@ -215,11 +215,11 @@ export class ConnectionManager {
 
     powerMonitor.once('resume', async () => {
       console.log('restarting tun2socks');
-      this.udpEnabled = await checkUdpForwardingEnabled(PROXY_ADDRESS, PROXY_PORT);
-      console.log(`UDP support: ${this.udpEnabled}`);
+      this.isUdpEnabled = await checkUdpForwardingEnabled(PROXY_ADDRESS, PROXY_PORT);
+      console.log(`UDP support: ${this.isUdpEnabled}`);
 
       this.tun2socks.onExit = this.tun2socksExitListener;
-      this.tun2socks.start(this.udpEnabled);
+      this.tun2socks.start(this.isUdpEnabled);
 
       if (this.reconnectedListener) {
         this.reconnectedListener();
@@ -330,7 +330,7 @@ class Tun2socks extends ChildProcessHelper {
     super(pathToEmbeddedBinary('badvpn', 'badvpn-tun2socks'));
   }
 
-  start(udpEnabled: boolean) {
+  start(isUdpEnabled: boolean) {
     // ./badvpn-tun2socks.exe \
     //   --tundev "tap0901:outline-tap0:10.0.85.2:10.0.85.0:255.255.255.0" \
     //   --netif-ipaddr 10.0.85.1 --netif-netmask 255.255.255.0 \
@@ -348,7 +348,7 @@ class Tun2socks extends ChildProcessHelper {
     args.push('--socks-server-addr', `${this.proxyAddress}:${this.proxyPort}`);
     args.push('--loglevel', 'error');
     args.push('--transparent-dns');
-    if (udpEnabled) {
+    if (isUdpEnabled) {
       args.push('--socks5-udp');
       args.push('--udp-relay-addr', `${this.proxyAddress}:${this.proxyPort}`);
     }
