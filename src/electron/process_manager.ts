@@ -170,41 +170,34 @@ export class ConnectionManager {
     await this.routing.start();
   }
 
-  private networkChanged(status: ConnectionStatus) {
+  private async networkChanged(status: ConnectionStatus) {
     if (status === ConnectionStatus.CONNECTED) {
       // Re-test whether UDP is available and, if necessary, (silently) restart tun2socks.
-      checkUdpForwardingEnabled(PROXY_ADDRESS, PROXY_PORT)
-          .then(
-              (udpNowEnabled) => {
-                if (udpNowEnabled === this.udpEnabled) {
-                  console.log('no change in UDP availability');
-                  if (this.reconnectedListener) {
-                    this.reconnectedListener();
-                  }
-                  return;
-                }
+      const udpNowEnabled = await checkUdpForwardingEnabled(PROXY_ADDRESS, PROXY_PORT);
+      if (udpNowEnabled === this.udpEnabled) {
+        console.log('no change in UDP availability');
+        if (this.reconnectedListener) {
+          this.reconnectedListener();
+        }
+        return;
+      }
 
-                console.log(`UDP support change: ${this.udpEnabled} -> ${udpNowEnabled}`);
-                this.udpEnabled = udpNowEnabled;
+      console.log(`UDP support change: ${this.udpEnabled} -> ${udpNowEnabled}`);
+      this.udpEnabled = udpNowEnabled;
 
-                // Swap out the current listener, restart once the current process exits.
-                this.tun2socks.onExit = () => {
-                  console.log('terminated tun2socks for UDP change');
+      // Swap out the current listener, restart once the current process exits.
+      this.tun2socks.onExit = () => {
+        console.log('terminated tun2socks for UDP change');
 
-                  this.tun2socks.onExit = this.tun2socksExitListener;
-                  this.tun2socks.start(this.udpEnabled);
+        this.tun2socks.onExit = this.tun2socksExitListener;
+        this.tun2socks.start(this.udpEnabled);
 
-                  if (this.reconnectedListener) {
-                    this.reconnectedListener();
-                  }
-                };
+        if (this.reconnectedListener) {
+          this.reconnectedListener();
+        }
+      };
 
-                this.tun2socks.stop();
-              },
-              (e) => {
-                // TODO: We can't just tear down the connection as traffic will leak.
-                console.error(`could not test for UDP availability: ${e.message}`);
-              });
+      this.tun2socks.stop();
     } else if (status === ConnectionStatus.RECONNECTING) {
       if (this.reconnectingListener) {
         this.reconnectingListener();
@@ -220,25 +213,17 @@ export class ConnectionManager {
       console.log('stopped tun2socks in preparation for suspend');
     };
 
-    powerMonitor.once('resume', () => {
+    powerMonitor.once('resume', async () => {
       console.log('restarting tun2socks');
-      checkUdpForwardingEnabled(PROXY_ADDRESS, PROXY_PORT)
-          .then(
-              (udpNowEnabled) => {
-                console.log(`UDP support: ${udpNowEnabled}`);
-                this.udpEnabled = udpNowEnabled;
+      this.udpEnabled = await checkUdpForwardingEnabled(PROXY_ADDRESS, PROXY_PORT);
+      console.log(`UDP support: ${this.udpEnabled}`);
 
-                this.tun2socks.onExit = this.tun2socksExitListener;
-                this.tun2socks.start(this.udpEnabled);
+      this.tun2socks.onExit = this.tun2socksExitListener;
+      this.tun2socks.start(this.udpEnabled);
 
-                if (this.reconnectedListener) {
-                  this.reconnectedListener();
-                }
-              },
-              (e) => {
-                // TODO: We can't just tear down the connection as traffic will leak.
-                console.error(`could not test for UDP availability: ${e.message}`);
-              });
+      if (this.reconnectedListener) {
+        this.reconnectedListener();
+      }
     });
   }
 
