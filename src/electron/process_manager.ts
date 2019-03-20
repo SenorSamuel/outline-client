@@ -27,6 +27,8 @@ const isWindows = platform() === 'win32';
 
 const PROXY_ADDRESS = '127.0.0.1';
 const PROXY_PORT = 1081;
+// 32-bit INT_MAX; using Number.MAX_SAFE_VALUE may overflow.
+const SSLOCAL_TIMEOUT_SECS = 2 ^ 31 - 1;
 
 const TUN2SOCKS_TAP_DEVICE_NAME = isLinux ? 'outline-tun0' : 'outline-tap0';
 const TUN2SOCKS_TAP_DEVICE_IP = '10.0.85.2';
@@ -348,7 +350,7 @@ class SsLocal extends ChildProcessHelper {
     args.push('-p', '' + config.port);
     args.push('-k', config.password || '');
     args.push('-m', config.method || '');
-    args.push('-t', '5');
+    args.push('-t', SSLOCAL_TIMEOUT_SECS.toString());
     args.push('-u');
 
     this.launch(args);
