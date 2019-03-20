@@ -64,29 +64,50 @@ enum RoutingServiceStatusCode {
 //  - Linux: systemctl start|stop outline_proxy_controller.service
 //  - Windows: net start|stop OutlineService
 export class RoutingDaemon {
+  private socket: Socket|undefined;
+
+  private fulfillDisconnect: (() => void)|undefined;
+
+  private disconnected = new Promise<void>((F) => {
+    this.fulfillDisconnect = F;
+  });
+
+  private networkChangeListener?: (status: ConnectionStatus) => void;
+
+  constructor(private proxyAddress: string, private isAutoConnect: boolean) {}
+
   // Fulfills once a connection is established with the routing daemon *and* it has successfully
   // configured the system's routing table.
-  static async create(proxyAddress: string, isAutoConnect: boolean, retry = true) {
-    return new Promise<RoutingDaemon>((fulfill, reject) => {
-      const socket = createConnection(SERVICE_NAME, () => {
-        socket.removeListener('error', initialErrorHandler);
+  async start(retry = true) {
+    return new Promise<void>((fulfill, reject) => {
+      const newSocket = this.socket = createConnection(SERVICE_NAME, () => {
+        newSocket.removeListener('error', initialErrorHandler);
 
-        socket.once('data', (data) => {
+        newSocket.once('data', (data) => {
           const message: RoutingServiceResponse = JSON.parse(data.toString());
           if (message.action !== RoutingServiceAction.CONFIGURE_ROUTING ||
               message.statusCode !== RoutingServiceStatusCode.SUCCESS) {
             // TODO: concrete error
             reject(new Error(message.errorMessage));
-            socket.end();
+            newSocket.end();
             return;
           }
 
-          fulfill(new RoutingDaemon(socket));
+          // Good to go! Attach our "regular" data handler and listen for close.
+          newSocket.on('data', this.dataHandler.bind(this));
+          newSocket.once('close', () => {
+            newSocket.removeAllListeners();
+            if (this.fulfillDisconnect) {
+              this.fulfillDisconnect();
+            }
+          });
+
+          fulfill();
         });
 
-        socket.write(JSON.stringify({
+        newSocket.write(JSON.stringify({
           action: RoutingServiceAction.CONFIGURE_ROUTING,
-          parameters: {'proxyIp': proxyAddress, 'isAutoConnect': isAutoConnect}
+          parameters: {'proxyIp': this.proxyAddress, 'isAutoConnect': this.isAutoConnect}
         } as RoutingServiceRequest));
       });
 
@@ -105,50 +126,39 @@ export class RoutingDaemon {
             return;
           }
 
-          fulfill(this.create(proxyAddress, isAutoConnect, false));
+          fulfill(this.start(false));
         });
       };
 
-      socket.on('error', initialErrorHandler);
+      newSocket.on('error', initialErrorHandler);
     });
   }
 
-  private fulfillDisconnect: (() => void)|undefined;
-
-  private disconnected = new Promise<void>((F) => {
-    this.fulfillDisconnect = F;
-  });
-
-  private networkChangeListener?: (status: ConnectionStatus) => void;
-
-  private constructor(private readonly socket: Socket) {
-    socket.on('data', (data) => {
-      const message: RoutingServiceResponse = JSON.parse(data.toString());
-      switch (message.action) {
-        case RoutingServiceAction.STATUS_CHANGED:
-          if (this.networkChangeListener) {
-            this.networkChangeListener(message.connectionStatus);
-          }
-          break;
-        case RoutingServiceAction.RESET_ROUTING:
-          // TODO: examine statusCode
-          socket.end();
-          break;
-        default:
-          console.error(`unexpected message from background service: ${data.toString()}`);
-      }
-    });
-
-    socket.once('close', () => {
-      socket.removeAllListeners();
-      if (this.fulfillDisconnect) {
-        this.fulfillDisconnect();
-      }
-    });
+  private dataHandler(data: Buffer) {
+    const message: RoutingServiceResponse = JSON.parse(data.toString());
+    switch (message.action) {
+      case RoutingServiceAction.STATUS_CHANGED:
+        if (this.networkChangeListener) {
+          this.networkChangeListener(message.connectionStatus);
+        }
+        break;
+      case RoutingServiceAction.RESET_ROUTING:
+        // TODO: examine statusCode
+        if (this.socket) {
+          this.socket.end();
+        }
+        break;
+      default:
+        console.error(`unexpected message from background service: ${data.toString()}`);
+    }
   }
 
   // Returns synchronously: use #onceDisconnected to be notified when the connection terminates.
   stop() {
+    if (!this.socket) {
+      return;
+    }
+
     this.socket.write(JSON.stringify(
         {action: RoutingServiceAction.RESET_ROUTING, parameters: {}} as RoutingServiceRequest));
   }

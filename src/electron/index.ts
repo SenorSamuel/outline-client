@@ -298,9 +298,8 @@ async function startVpn(
     throw new Error('already connected');
   }
 
-  return ConnectionManager.create(config, isAutoConnect).then((newConnection) => {
-    currentConnection = newConnection;
-
+  const newConnection = currentConnection = new ConnectionManager(config, isAutoConnect);
+  return newConnection.start().then(() => {
     newConnection.onceStopped.then(() => {
       console.log(`*** disconnected from ${id}`);
       currentConnection = undefined;

@@ -92,55 +92,16 @@ function testTapDevice() {
 //  - repeat the UDP test when the network changes and restart tun2socks if the result has changed
 //  - silently restart tun2socks when the system is about to suspend (Windows only)
 export class ConnectionManager {
-  // Fulfills once all three helpers have started successfully.
-  static async create(config: cordova.plugins.outline.ServerConfig, isAutoConnect: boolean) {
-    if (isWindows) {
-      testTapDevice();
-    }
-
-    // ss-local must be up and running before we can test whether UDP is available (and, if
-    // isAutoConnect is true, that the supplied credentials are valid). So, create an instance now
-    // and "re-use" it by passing it to the constructed object.
-    return new Promise<ConnectionManager>((fulfill, reject) => {
-      const ssLocal = new SsLocal(PROXY_PORT);
-      ssLocal.onExit = () => {
-        reject(new Error('ss-local exited during UDP check'));
-      };
-      ssLocal.start(config);
-
-      isServerReachable(
-          PROXY_ADDRESS, PROXY_PORT, SSLOCAL_CONNECTION_TIMEOUT, SSLOCAL_MAX_ATTEMPTS,
-          SSLOCAL_RETRY_INTERVAL_MS)
-          .then(() => {
-            // Don't validate credentials on boot: if the key was revoked, we want the system to
-            // stay "connected" so that traffic doesn't leak.
-            if (isAutoConnect) {
-              return;
-            }
-            return validateServerCredentials(PROXY_ADDRESS, PROXY_PORT);
-          })
-          .then(() => {
-            return checkUdpForwardingEnabled(PROXY_ADDRESS, PROXY_PORT);
-          })
-          .then((udpEnabled) => {
-            console.log(`UDP support: ${udpEnabled}`);
-            return RoutingDaemon.create(config.host || '', isAutoConnect).then((routing) => {
-              fulfill(new ConnectionManager(routing, ssLocal, udpEnabled));
-            });
-          })
-          .catch((e) => {
-            ssLocal.stop();
-            reject(e);
-          });
-    });
-  }
-
-  private tun2socks = new Tun2socks(PROXY_ADDRESS, PROXY_PORT);
+  private readonly routing: RoutingDaemon;
+  private readonly ssLocal = new SsLocal(PROXY_PORT);
+  private readonly tun2socks = new Tun2socks(PROXY_ADDRESS, PROXY_PORT);
 
   // Extracted out to an instance variable because in certain situations, notably a change in UDP
   // support, we need to stop and restart tun2socks *without notifying the client* and this allows
   // us swap the listener in and out.
   private tun2socksExitListener?: () => void | undefined;
+
+  private udpEnabled = false;
 
   private readonly onAllHelpersStopped: Promise<void>;
 
@@ -148,9 +109,10 @@ export class ConnectionManager {
 
   private reconnectedListener?: () => void;
 
-  private constructor(
-      private readonly routing: RoutingDaemon, private readonly ssLocal: SsLocal,
-      private udpEnabled: boolean) {
+  constructor(
+      private config: cordova.plugins.outline.ServerConfig, private isAutoConnect: boolean) {
+    this.routing = new RoutingDaemon(config.host || '', isAutoConnect);
+
     // This trio of Promises, each tied to a helper process' exit, is key to the instance's
     // lifecycle:
     //  - once any helper fails or exits, stop them all
@@ -181,10 +143,31 @@ export class ConnectionManager {
     if (isWindows) {
       powerMonitor.on('suspend', this.suspendListener.bind(this));
     }
+  }
 
-    // Finally, launch tun2socks. This may immediately fail but that's okay: the exit listener will
-    // be invoked and the connection and all helpers (asynchronously) torn down.
-    this.tun2socks.start(udpEnabled);
+  // Fulfills once all three helpers have started successfully.
+  async start() {
+    if (isWindows) {
+      testTapDevice();
+    }
+
+    // ss-local must be up in order to test UDP support and validate credentials.
+    this.ssLocal.start(this.config);
+    await isServerReachable(
+        PROXY_ADDRESS, PROXY_PORT, SSLOCAL_CONNECTION_TIMEOUT, SSLOCAL_MAX_ATTEMPTS,
+        SSLOCAL_RETRY_INTERVAL_MS);
+
+    // Don't validate credentials on boot: if the key was revoked, we want the system to stay
+    // "connected" so that traffic doesn't leak.
+    if (!this.isAutoConnect) {
+      await validateServerCredentials(PROXY_ADDRESS, PROXY_PORT);
+    }
+
+    this.udpEnabled = await checkUdpForwardingEnabled(PROXY_ADDRESS, PROXY_PORT);
+    console.log(`UDP support: ${this.udpEnabled}`);
+    this.tun2socks.start(this.udpEnabled);
+
+    await this.routing.start();
   }
 
   private networkChanged(status: ConnectionStatus) {
