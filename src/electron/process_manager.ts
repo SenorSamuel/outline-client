@@ -233,7 +233,7 @@ export class ConnectionManager {
 
   // Returns synchronously: use #onceStopped to be notified when all helper processes exit.
   stop() {
-    powerMonitor.removeListener('suspend', this.suspendListener);
+    powerMonitor.removeListener('suspend', this.suspendListener.bind(this));
 
     try {
       this.routing.stop();
