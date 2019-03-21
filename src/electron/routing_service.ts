@@ -66,7 +66,7 @@ enum RoutingServiceStatusCode {
 export class RoutingDaemon {
   private socket: Socket|undefined;
 
-  private fulfillDisconnect: (() => void)|undefined;
+  private fulfillDisconnect!: () => void;
 
   private disconnected = new Promise<void>((F) => {
     this.fulfillDisconnect = F;
@@ -93,14 +93,8 @@ export class RoutingDaemon {
             return;
           }
 
-          // Good to go! Attach our "regular" data handler and listen for close.
+          // Good to go! Attach our "regular" data handler.
           newSocket.on('data', this.dataHandler.bind(this));
-          newSocket.once('close', () => {
-            newSocket.removeAllListeners();
-            if (this.fulfillDisconnect) {
-              this.fulfillDisconnect();
-            }
-          });
 
           fulfill();
         });
@@ -129,8 +123,14 @@ export class RoutingDaemon {
           fulfill(this.start(false));
         });
       };
+      newSocket.once('error', initialErrorHandler);
 
-      newSocket.on('error', initialErrorHandler);
+      const cleanup = () => {
+        newSocket.removeAllListeners();
+        this.fulfillDisconnect();
+      };
+      newSocket.once('close', cleanup);
+      newSocket.once('error', cleanup);
     });
   }
 
@@ -157,9 +157,7 @@ export class RoutingDaemon {
   stop() {
     if (!this.socket) {
       // Never started.
-      if (this.fulfillDisconnect) {
-        this.fulfillDisconnect();
-      }
+      this.fulfillDisconnect();
       return;
     }
 
