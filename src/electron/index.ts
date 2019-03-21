@@ -299,25 +299,26 @@ async function startVpn(
   }
 
   const newConnection = currentConnection = new ConnectionManager(config, isAutoConnect);
-  return newConnection.start().then(() => {
-    newConnection.onceStopped.then(() => {
-      console.log(`disconnected from ${id}`);
-      currentConnection = undefined;
-      sendConnectionStatus(ConnectionStatus.DISCONNECTED, id);
-    });
 
-    newConnection.onReconnecting = () => {
-      console.log(`reconnecting to ${id}`);
-      sendConnectionStatus(ConnectionStatus.RECONNECTING, id);
-    };
 
-    newConnection.onReconnected = () => {
-      console.log(`reconnected to ${id}`);
-      sendConnectionStatus(ConnectionStatus.CONNECTED, id);
-    };
-
-    sendConnectionStatus(ConnectionStatus.CONNECTED, id);
+  newConnection.onceStopped.then(() => {
+    console.log(`disconnected from ${id}`);
+    currentConnection = undefined;
+    sendConnectionStatus(ConnectionStatus.DISCONNECTED, id);
   });
+
+  newConnection.onReconnecting = () => {
+    console.log(`reconnecting to ${id}`);
+    sendConnectionStatus(ConnectionStatus.RECONNECTING, id);
+  };
+
+  newConnection.onReconnected = () => {
+    console.log(`reconnected to ${id}`);
+    sendConnectionStatus(ConnectionStatus.CONNECTED, id);
+  };
+
+  await newConnection.start();
+  sendConnectionStatus(ConnectionStatus.CONNECTED, id);
 }
 
 function sendConnectionStatus(status: ConnectionStatus, connectionId: string) {
@@ -352,7 +353,7 @@ promiseIpc.on(
       //       being faster, this would help prevent traffic leaks - the Cordova clients already do
       //       this).
       if (currentConnection) {
-        console.log('disconnecting from current server');
+        console.log('shutting down current connection');
         currentConnection.stop();
         await currentConnection.onceStopped;
       }

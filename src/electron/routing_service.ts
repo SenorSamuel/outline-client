@@ -153,9 +153,13 @@ export class RoutingDaemon {
     }
   }
 
-  // Returns synchronously: use #onceDisconnected to be notified when the connection terminates.
+  // Use #onceDisconnected to be notified when the connection terminates.
   stop() {
     if (!this.socket) {
+      // Never started.
+      if (this.fulfillDisconnect) {
+        this.fulfillDisconnect();
+      }
       return;
     }
 
