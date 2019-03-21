@@ -170,36 +170,13 @@ export class ConnectionManager {
 
   private async networkChanged(status: ConnectionStatus) {
     if (status === ConnectionStatus.CONNECTED) {
-      // Re-test whether UDP is available and, if necessary, restart tun2socks.
-      let isUdpEnabledNow = this.isUdpEnabled;
-      try {
-        // Because we've (occasionally) seen failures connecting to ss-local
-        // immediately after network changes, make sure it's reachable first.
-        await this.isSsLocalReachable();
-        isUdpEnabledNow = await checkUdpForwardingEnabled(PROXY_ADDRESS, PROXY_PORT);
-      } catch (e) {
-        console.error(`UDP test failed: ${e.message}`);
-      }
-
-      if (isUdpEnabledNow !== this.isUdpEnabled) {
-        console.log(`UDP support change: ${this.isUdpEnabled} -> ${isUdpEnabledNow}`);
-        this.isUdpEnabled = isUdpEnabledNow;
-
-        // Swap out the current listener, restart once the current process exits.
-        await new Promise((fulfill) => {
-          this.tun2socks.onExit = () => {
-            console.log('restarting tun2socks');
-            this.tun2socks.onExit = this.tun2socksExitListener;
-            this.tun2socks.start(this.isUdpEnabled);
-            fulfill();
-          };
-          this.tun2socks.stop();
-        });
-      }
-
       if (this.reconnectedListener) {
         this.reconnectedListener();
       }
+
+      // Test whether UDP availability has changed; since it won't change 99% of the time, do this
+      // *after* we've informed the client we've reconnected.
+      this.retestUdp();
     } else if (status === ConnectionStatus.RECONNECTING) {
       if (this.reconnectingListener) {
         this.reconnectingListener();
@@ -209,6 +186,31 @@ export class ConnectionManager {
     }
   }
 
+  private async retestUdp() {
+    try {
+      // Possibly over-cautious, though we have seen occasional failures immediately after network
+      // changes: ensure ss-local is reachable first.
+      await this.isSsLocalReachable();
+      if (this.isUdpEnabled === await checkUdpForwardingEnabled(PROXY_ADDRESS, PROXY_PORT)) {
+        return;
+      }
+    } catch (e) {
+      console.error(`UDP test failed: ${e.message}`);
+      return;
+    }
+
+    this.isUdpEnabled = !this.isUdpEnabled;
+    console.log(`UDP support change: now ${this.isUdpEnabled}`);
+
+    // Swap out the current listener, restart once the current process exits.
+    this.tun2socks.onExit = () => {
+      console.log('restarting tun2socks');
+      this.tun2socks.onExit = this.tun2socksExitListener;
+      this.tun2socks.start(this.isUdpEnabled);
+    };
+    this.tun2socks.stop();
+  }
+
   private suspendListener() {
     // Swap out the current listener, restart once the system resumes.
     this.tun2socks.onExit = () => {
@@ -216,18 +218,16 @@ export class ConnectionManager {
     };
 
     powerMonitor.once('resume', async () => {
-      console.log('restarting tun2socks');
-      // Possible over-caution: ensure ss-local is reachable.
-      await this.isSsLocalReachable();
-      this.isUdpEnabled = await checkUdpForwardingEnabled(PROXY_ADDRESS, PROXY_PORT);
-      console.log(`UDP support: ${this.isUdpEnabled}`);
-
-      this.tun2socks.onExit = this.tun2socksExitListener;
-      this.tun2socks.start(this.isUdpEnabled);
-
       if (this.reconnectedListener) {
         this.reconnectedListener();
       }
+
+      console.log('restarting tun2socks');
+      this.tun2socks.onExit = this.tun2socksExitListener;
+      this.tun2socks.start(this.isUdpEnabled);
+
+      // Check if UDP support has changed; if so, silently restart.
+      this.retestUdp();
     });
   }
 
@@ -238,9 +238,7 @@ export class ConnectionManager {
     try {
       this.routing.stop();
     } catch (e) {
-      // This can happen for several reasons, e.g. the daemon may have stopped while we were
-      // connected.
-      console.error(`could not stop routing: ${e.message}`);
+      // Daemon may have stopped while we were connected.
     }
 
     this.ssLocal.stop();
